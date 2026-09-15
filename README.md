@@ -3,13 +3,11 @@
 <br/>
 
 ```
-██████╗ ██████╗  ██████╗     ███╗   ██╗██████╗ ███╗   ██╗
-██╔══██╗██╔══██╗██╔════╝     ████╗  ██║██╔══██╗████╗  ██║
-██████╔╝██████╔╝██║  ███╗    ██╔██╗ ██║██████╔╝██╔██╗ ██║
-██╔══██╗██╔═══╝ ██║   ██║    ██║╚██╗██║██╔═══╝ ██║╚██╗██║
-██║  ██║██║     ╚██████╔╝    ██║ ╚████║██║     ██║ ╚████║
-╚═╝  ╚═╝╚═╝      ╚═════╝     ╚═╝  ╚═══╝╚═╝     ╚═╝  ╚═══╝
-                         MICROGRID
+    __  _________________  ____  __________  ________ 
+   /  |/  /  _/ ____/ __ \/ __ \/ ____/ __ \/  _/ __ \
+  / /|_/ // // /   / /_/ / / / / / __/ /_/ // // / / /
+ / /  / // // /___/ _, _/ /_/ / /_/ / _, _// // /_/ / 
+/_/  /_/___/\____/_/ |_|\____/\____/_/ |_/___/_____/
 ```
 
 <h3>Renewable Microgrid Arbitrage & Curtailment Dispatch</h3>
@@ -278,7 +276,7 @@ git clone https://github.com/abderrahman-ai/microgrid-arbitrage-curtailment-disp
 git checkout -b feat/new-capability
 
 # 3. Commit your changes
-git commit -m "feat: enhance node error handling"
+git commit -m "style: update unique custom ASCII art banner"
 
 # 4. Push and open a Pull Request
 git push origin feat/new-capability
