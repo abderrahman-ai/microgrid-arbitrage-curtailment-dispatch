@@ -1,0 +1,669 @@
+{
+  "name": "—A—u—t—o—m—a—t—e—d— —R—e—n—e—w—a—b—l—e— —M—i—c—r—o—g—r—i—d— —A—r—b—i—t—r—a—g—e— —&— —C—u—r—t—a—i—l—m—e—n—t— —D—i—s—p—a—t—c—h—",
+  "nodes": [
+    {
+      "id": "note-overview",
+      "name": "StickyNote_Overview",
+      "parameters": {
+        "color": 6,
+        "content": "## ⚡ Renewable Microgrid Arbitrage & Curtailment Dispatch\n**Profile:** Academic & Industrial Grid Modeling (Grenoble INP Ense3 / INSA Lyon benchmark)\n\n**How to Use:**\n1. Click **\"Test workflow\"** or wait for the daily 23:00 schedule trigger.\n2. Review aggregated financial metrics in **PersistDailyTelemetry** and peak alerts in **DispatchAlertWebhook**.",
+        "height": 170,
+        "width": 680
+      },
+      "position": [
+        140,
+        -180
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "id": "note-ingestion",
+      "name": "StickyNote_Ingestion",
+      "parameters": {
+        "color": 4,
+        "content": "### 1. Ingestion (Day-Ahead)\nFetches 24-hour inputs in parallel:\n• **Spot Prices:** EPEX Spot / RTE France Day-Ahead\n• **Solar Irradiance:** Open-Meteo GHI (Grenoble 45.19°N, 5.72°E)\n• **Campus Load:** 24h baseline demand profile",
+        "height": 120,
+        "width": 680
+      },
+      "position": [
+        140,
+        20
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-schedule-trigger",
+      "name": "ScheduleTrigger",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "expression": "0 23 * * *",
+              "field": "cronExpression"
+            }
+          ]
+        }
+      },
+      "position": [
+        160,
+        384
+      ],
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2
+    },
+    {
+      "id": "node-fetch-prices",
+      "name": "FetchSpotPrices",
+      "parameters": {
+        "options": {},
+        "url": "https://api.energy-charts.info/price?bzn=FR"
+      },
+      "position": [
+        400,
+        192
+      ],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2
+    },
+    {
+      "id": "node-parse-prices",
+      "name": "ParseSpotPrices",
+      "parameters": {
+        "jsCode": "// Normalize 24-hour Spot Electricity Prices (France Bidding Zone - EPEX Spot / ENTSO-E)\nconst inputData = $input.first().json;\nconst results = [];\n\nconst fallbackPrices = [\n  65.2, 58.4, 52.1, 48.9, 51.3, 62.0, 95.4, 142.8,\n  168.5, 135.2, 105.0, 88.4, 72.1, 64.5, 68.2, 85.0,\n  112.3, 155.6, 185.2, 198.4, 162.1, 125.0, 94.3, 75.0\n];\n\nif (inputData && Array.isArray(inputData.price) && inputData.price.length >= 24) {\n  const len = inputData.price.length;\n  const startIdx = len >= 48 ? 24 : Math.max(0, len - 24);\n  \n  for (let h = 0; h < 24; h++) {\n    const rawPrice = inputData.price[startIdx + h] !== undefined ? inputData.price[startIdx + h] : fallbackPrices[h];\n    const priceMwh = Math.round(Number(rawPrice) * 100) / 100;\n    const unixSec = inputData.unix_seconds && inputData.unix_seconds[startIdx + h] ? inputData.unix_seconds[startIdx + h] : null;\n    const dateObj = unixSec ? new Date(unixSec * 1000) : new Date();\n    \n    results.push({\n      json: {\n        hour: h,\n        timestamp: dateObj.toISOString(),\n        price_eur_mwh: priceMwh,\n        price_eur_kwh: Math.round((priceMwh / 1000.0) * 10000) / 10000\n      }\n    });\n  }\n} else {\n  const baseDate = new Date();\n  baseDate.setDate(baseDate.getDate() + 1);\n  baseDate.setHours(0, 0, 0, 0);\n\n  for (let h = 0; h < 24; h++) {\n    const d = new Date(baseDate.getTime() + h * 3600000);\n    const pMwh = fallbackPrices[h];\n    results.push({\n      json: {\n        hour: h,\n        timestamp: d.toISOString(),\n        price_eur_mwh: pMwh,\n        price_eur_kwh: Math.round((pMwh / 1000.0) * 10000) / 10000\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "position": [
+        640,
+        192
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "id": "node-fetch-solar",
+      "name": "FetchSolarForecast",
+      "parameters": {
+        "options": {},
+        "url": "https://api.open-meteo.com/v1/forecast?latitude=45.19&longitude=5.72&hourly=shortwave_radiation_instant,diffuse_radiation,direct_normal_irradiance&timezone=Europe%2FParis&forecast_days=2"
+      },
+      "position": [
+        400,
+        384
+      ],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2
+    },
+    {
+      "id": "node-parse-solar",
+      "name": "ParseSolarForecast",
+      "parameters": {
+        "jsCode": "// Open-Meteo Solar GHI to PV Generation Conversion\n// Site: Grenoble INP Ense3 / GreEn-ER (Lat: 45.19, Lon: 5.72)\n// Plant Specifications: 100 kWp rooftop & canopy PV, Performance Ratio (PR) = 0.85\nconst inputData = $input.first().json;\nconst results = [];\n\nconst PV_PEAK_CAPACITY_KW = 100.0;\nconst PERFORMANCE_RATIO = 0.85;\n\nconst fallbackGhi = [\n  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 15.0, 85.0, 240.0, 480.0,\n  680.0, 820.0, 890.0, 870.0, 780.0, 610.0, 420.0, 210.0,\n  60.0, 5.0, 0.0, 0.0, 0.0, 0.0\n];\n\nconst hourlyData = inputData && inputData.hourly ? inputData.hourly : null;\n\nfor (let h = 0; h < 24; h++) {\n  const forecastIdx = 24 + h;\n  let ghi = 0.0;\n  let timeStr = \"\";\n\n  if (hourlyData && hourlyData.shortwave_radiation_instant && hourlyData.shortwave_radiation_instant[forecastIdx] !== undefined) {\n    ghi = Math.max(0, Number(hourlyData.shortwave_radiation_instant[forecastIdx]));\n    timeStr = hourlyData.time && hourlyData.time[forecastIdx] ? hourlyData.time[forecastIdx] : \"\";\n  } else {\n    ghi = fallbackGhi[h];\n    const d = new Date();\n    d.setDate(d.getDate() + 1);\n    d.setHours(h, 0, 0, 0);\n    timeStr = d.toISOString();\n  }\n\n  const p_solar_kw = Math.round((PV_PEAK_CAPACITY_KW * (ghi / 1000.0) * PERFORMANCE_RATIO) * 100) / 100;\n\n  results.push({\n    json: {\n      hour: h,\n      solar_forecast_time: timeStr,\n      ghi_wm2: Math.round(ghi * 10) / 10,\n      solar_generation_kw: p_solar_kw\n    }\n  });\n}\n\nreturn results;"
+      },
+      "position": [
+        640,
+        384
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "id": "node-campus-load",
+      "name": "CampusLoadProfile",
+      "parameters": {
+        "jsCode": "// 24-Hour Campus Baseline Load Profile\n// Profile: Academic and research facility (Grenoble INP Ense3 / INSA Lyon benchmark)\nconst results = [];\n\nconst campusLoadCurveKw = [\n  32.0, 30.0, 28.0, 28.0, 30.0, 35.0,\n  52.0, 75.0, 95.0, 110.0, 118.0, 115.0,\n  88.0, 92.0, 112.0, 116.0, 108.0, 94.0,\n  72.0, 58.0, 46.0, 38.0, 34.0, 32.0\n];\n\nfor (let h = 0; h < 24; h++) {\n  results.push({\n    json: {\n      hour: h,\n      load_kw: campusLoadCurveKw[h]\n    }\n  });\n}\n\nreturn results;"
+      },
+      "position": [
+        640,
+        576
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "id": "note-merge",
+      "name": "StickyNote_Merge",
+      "parameters": {
+        "color": 2,
+        "content": "### 2. Time-Series Alignment\nCombines the three parallel data streams by hourly position into an aligned 24-item dataset.",
+        "height": 100,
+        "width": 440
+      },
+      "position": [
+        860,
+        140
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-merge-prices-solar",
+      "name": "MergePricesSolar",
+      "parameters": {
+        "combineBy": "combineByPosition",
+        "mode": "combine",
+        "options": {}
+      },
+      "position": [
+        880,
+        288
+      ],
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2
+    },
+    {
+      "id": "node-merge-all",
+      "name": "MergeDatasets",
+      "parameters": {
+        "combineBy": "combineByPosition",
+        "mode": "combine",
+        "options": {}
+      },
+      "position": [
+        1120,
+        384
+      ],
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2
+    },
+    {
+      "id": "note-optimizer",
+      "name": "StickyNote_Optimizer",
+      "parameters": {
+        "color": 5,
+        "content": "### 3. Dispatch Optimizer\n**Battery:** 200 kWh / 50 kW (90% round-trip $\\eta$)\n• Dynamic price quartiles ($Q_1$ charge, $Q_4$ discharge)\n• Solar curtailment control ($P_{solar} > P_{load}$)\n• Hourly cost & arbitrage savings calculation",
+        "height": 180,
+        "width": 260
+      },
+      "position": [
+        1340,
+        140
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-arbitrage-optimizer",
+      "name": "ArbitrageOptimizer",
+      "parameters": {
+        "jsCode": "/**\n * RENEWABLE MICROGRID ARBITRAGE & CURTAILMENT DISPATCH OPTIMIZER\n * Target: Academic & Industrial Modeling (Grenoble INP Ense3 / INSA Lyon)\n */\n\nconst items = $input.all().sort((a, b) => Number(a.json.hour || 0) - Number(b.json.hour || 0));\nif (!items || items.length === 0) {\n  throw new Error(\"No merged microgrid data received by optimizer.\");\n}\n\n// 1. ASSET PARAMETERS & CONSTRAINTS\nconst BATT_CAPACITY_KWH = 200.0;\nconst P_MAX_KW = 50.0;\nconst SOC_MIN_FRAC = 0.20; // 20%\nconst SOC_MAX_FRAC = 0.95; // 95%\nconst E_MIN_KWH = BATT_CAPACITY_KWH * SOC_MIN_FRAC; // 40 kWh\nconst E_MAX_KWH = BATT_CAPACITY_KWH * SOC_MAX_FRAC; // 190 kWh\nconst ETA_RT = 0.90; // Round-trip efficiency\nconst ETA_DIR = Math.sqrt(ETA_RT); // ~0.948683\nconst DT = 1.0; // 1 hour time step\n\n// 2. PRICE QUARTILE CALCULATION\nconst prices = items.map(it => Number(it.json.price_eur_mwh || 0));\nconst sortedPrices = [...prices].sort((a, b) => a - b);\n\nfunction computePercentile(sortedArr, p) {\n  const idx = (sortedArr.length - 1) * p;\n  const lower = Math.floor(idx);\n  const upper = Math.ceil(idx);\n  const weight = idx - lower;\n  return sortedArr[lower] * (1 - weight) + sortedArr[upper] * weight;\n}\n\nconst q1_threshold = Math.round(computePercentile(sortedPrices, 0.25) * 100) / 100;\nconst q4_threshold = Math.round(computePercentile(sortedPrices, 0.75) * 100) / 100;\n\n// Initialize State of Charge at start of delivery day: 50% SoC (100 kWh) for balanced flexibility\nlet current_energy_kwh = BATT_CAPACITY_KWH * 0.50;\n\nconst dispatchPlan = [];\n\nfor (let t = 0; t < items.length; t++) {\n  const row = items[t].json;\n  const hour = row.hour !== undefined ? row.hour : t;\n  const timestamp = row.timestamp || `Hour ${hour}:00`;\n  const price_mwh = Number(row.price_eur_mwh || 0);\n  const price_kwh = price_mwh / 1000.0;\n  const p_load = Number(row.load_kw || 0);\n  const p_solar = Number(row.solar_generation_kw || 0);\n\n  const p_net = Math.round((p_load - p_solar) * 100) / 100;\n\n  let p_batt_ch = 0.0;\n  let p_batt_dis = 0.0;\n  let p_curtail = 0.0;\n  let p_grid_draw = 0.0;\n  let p_grid_feed = 0.0;\n  let status = 'IDLE';\n\n  const energy_headroom_kwh = Math.max(0, E_MAX_KWH - current_energy_kwh);\n  const max_possible_charge_kw = Math.min(P_MAX_KW, energy_headroom_kwh / (ETA_DIR * DT));\n\n  const energy_available_kwh = Math.max(0, current_energy_kwh - E_MIN_KWH);\n  const max_possible_discharge_kw = Math.min(P_MAX_KW, (energy_available_kwh * ETA_DIR) / DT);\n\n  // HEURISTIC STAGE 1: Solar Surplus & Curtailment Control\n  if (p_solar > p_load) {\n    const p_surplus = p_solar - p_load;\n\n    if (max_possible_charge_kw > 0.001) {\n      p_batt_ch = Math.min(p_surplus, max_possible_charge_kw);\n    }\n\n    p_curtail = Math.max(0, p_surplus - p_batt_ch);\n    p_grid_draw = 0.0;\n    p_grid_feed = 0.0;\n\n    if (p_curtail > 0.05) {\n      status = 'CURTAIL';\n    } else if (p_batt_ch > 0.05) {\n      status = 'CHARGE';\n    } else {\n      status = 'IDLE';\n    }\n  } else {\n    // HEURISTIC STAGE 2: Price-Threshold Economic Arbitrage (p_net >= 0)\n    if (price_mwh <= q1_threshold && max_possible_charge_kw > 0.001) {\n      p_batt_ch = max_possible_charge_kw;\n      p_batt_dis = 0.0;\n      p_grid_draw = p_net + p_batt_ch;\n      p_grid_feed = 0.0;\n      p_curtail = 0.0;\n      status = 'CHARGE';\n    } else if (price_mwh >= q4_threshold && max_possible_discharge_kw > 0.001) {\n      p_batt_dis = max_possible_discharge_kw;\n      p_batt_ch = 0.0;\n      p_curtail = 0.0;\n\n      if (p_batt_dis >= p_net) {\n        p_grid_draw = 0.0;\n        p_grid_feed = p_batt_dis - p_net;\n      } else {\n        p_grid_draw = p_net - p_batt_dis;\n        p_grid_feed = 0.0;\n      }\n      status = 'DISCHARGE';\n    } else {\n      p_batt_ch = 0.0;\n      p_batt_dis = 0.0;\n      p_grid_draw = p_net;\n      p_grid_feed = 0.0;\n      p_curtail = 0.0;\n      status = 'IDLE';\n    }\n  }\n\n  // HEURISTIC STAGE 3: State-of-Charge Dynamics Update\n  const delta_chem_kwh = (p_batt_ch * ETA_DIR - p_batt_dis / ETA_DIR) * DT;\n  current_energy_kwh = Math.min(E_MAX_KWH, Math.max(E_MIN_KWH, current_energy_kwh + delta_chem_kwh));\n  const current_soc_pct = Math.round((current_energy_kwh / BATT_CAPACITY_KWH) * 1000) / 10.0;\n\n  // HEURISTIC STAGE 4: Financial Accounting & Arbitrage Delta\n  const base_deficit_kwh = Math.max(0, p_load - p_solar);\n  const baseline_cost_eur = Math.round((base_deficit_kwh * price_kwh) * 100) / 100;\n  const optimized_cost_eur = Math.round(((p_grid_draw * price_kwh) - (p_grid_feed * price_kwh)) * 100) / 100;\n  const hourly_savings_eur = Math.round((baseline_cost_eur - optimized_cost_eur) * 100) / 100;\n\n  const is_q4_peak_discharge = (status === 'DISCHARGE' && price_mwh >= q4_threshold);\n\n  dispatchPlan.push({\n    json: {\n      hour: hour,\n      timestamp: timestamp,\n      spot_price_eur_mwh: price_mwh,\n      spot_price_eur_kwh: price_kwh,\n      q1_threshold_eur_mwh: q1_threshold,\n      q4_threshold_eur_mwh: q4_threshold,\n      load_kw: p_load,\n      solar_generation_kw: p_solar,\n      net_load_kw: p_net,\n      p_battery_charge_kw: Math.round(p_batt_ch * 100) / 100,\n      p_battery_discharge_kw: Math.round(p_batt_dis * 100) / 100,\n      battery_net_power_kw: Math.round((p_batt_ch - p_batt_dis) * 100) / 100,\n      battery_energy_kwh: Math.round(current_energy_kwh * 100) / 100,\n      soc_pct: current_soc_pct,\n      p_curtail_kw: Math.round(p_curtail * 100) / 100,\n      p_grid_import_kw: Math.round(p_grid_draw * 100) / 100,\n      p_grid_export_kw: Math.round(p_grid_feed * 100) / 100,\n      status: status,\n      is_q4_peak_discharge: is_q4_peak_discharge,\n      hourly_baseline_cost_eur: baseline_cost_eur,\n      hourly_optimized_cost_eur: optimized_cost_eur,\n      hourly_savings_eur: hourly_savings_eur\n    }\n  });\n}\n\nreturn dispatchPlan;"
+      },
+      "position": [
+        1360,
+        384
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "id": "note-routing",
+      "name": "StickyNote_Routing",
+      "parameters": {
+        "color": 7,
+        "content": "### 4. Directives Routing & Peak Alerting\nRoutes each hour to **DISCHARGE**, **CHARGE**, **CURTAIL**, or **IDLE**.\nHours discharging during **$Q_4$ Peak Tariff** trigger an automated webhook alert with real-time operational payload.",
+        "height": 100,
+        "width": 1080
+      },
+      "position": [
+        1640,
+        -70
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-route-directives",
+      "name": "RouteDirectives",
+      "parameters": {
+        "mode": "rules",
+        "options": {},
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "DISCHARGE"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                }
+              },
+              "outputKey": "DISCHARGE",
+              "renameOutput": true
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "CHARGE"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                }
+              },
+              "outputKey": "CHARGE",
+              "renameOutput": true
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "CURTAIL"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                }
+              },
+              "outputKey": "CURTAIL",
+              "renameOutput": true
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "IDLE"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                }
+              },
+              "outputKey": "IDLE",
+              "renameOutput": true
+            }
+          ]
+        }
+      },
+      "position": [
+        1640,
+        240
+      ],
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2
+    },
+    {
+      "id": "node-filter-peak-q4",
+      "name": "FilterPeakQ4Discharge",
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.is_q4_peak_discharge }}",
+              "operator": {
+                "operation": "equals",
+                "type": "boolean"
+              },
+              "rightValue": true
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          }
+        },
+        "options": {}
+      },
+      "position": [
+        1960,
+        100
+      ],
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2
+    },
+    {
+      "id": "node-dispatch-webhook",
+      "name": "DispatchAlertWebhook",
+      "parameters": {
+        "contentType": "json",
+        "jsonBody": "={{ {\n  \"event\": \"PEAK_DISPATCH_ALERT\",\n  \"facility\": \"Grenoble INP Ense3 Microgrid\",\n  \"hour\": $json.hour,\n  \"timestamp\": $json.timestamp,\n  \"spot_price_eur_mwh\": $json.spot_price_eur_mwh,\n  \"discharge_power_kw\": $json.p_battery_discharge_kw,\n  \"battery_soc_pct\": $json.soc_pct,\n  \"grid_export_kw\": $json.p_grid_export_kw,\n  \"message\": \"⚡ Peak Tariff Arbitrage Active: Battery discharging \" + $json.p_battery_discharge_kw + \" kW at €\" + $json.spot_price_eur_mwh + \"/MWh (SoC: \" + $json.soc_pct + \"%)\"\n} }}",
+        "method": "POST",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "url": "https://httpbin.org/post"
+      },
+      "position": [
+        2260,
+        60
+      ],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2
+    },
+    {
+      "id": "node-alert-delivered",
+      "name": "AlertDelivered",
+      "parameters": {},
+      "position": [
+        2540,
+        60
+      ],
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-standard-discharge",
+      "name": "StandardDischarge",
+      "parameters": {},
+      "position": [
+        2260,
+        150
+      ],
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-handle-charge",
+      "name": "HandleCharge",
+      "parameters": {},
+      "position": [
+        1960,
+        240
+      ],
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-handle-curtail",
+      "name": "HandleCurtail",
+      "parameters": {},
+      "position": [
+        1960,
+        320
+      ],
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-handle-idle",
+      "name": "HandleIdle",
+      "parameters": {},
+      "position": [
+        1960,
+        400
+      ],
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1
+    },
+    {
+      "id": "note-persistence",
+      "name": "StickyNote_Persistence",
+      "parameters": {
+        "color": 3,
+        "content": "### 5. Daily Aggregation & PostgreSQL Telemetry\nAggregates 24-hour energy totals and financial savings, automatically initializing and upserting into `microgrid_daily_telemetry`.",
+        "height": 70,
+        "width": 520
+      },
+      "position": [
+        1640,
+        450
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "id": "node-aggregate-metrics",
+      "name": "AggregateDailyMetrics",
+      "parameters": {
+        "jsCode": "// Aggregate 24-hour dispatch simulation into daily operational and financial metrics\nconst items = $input.all();\nlet total_solar_yield_kwh = 0.0;\nlet total_grid_import_kwh = 0.0;\nlet total_grid_export_kwh = 0.0;\nlet curtailed_energy_kwh = 0.0;\nlet baseline_cost_eur = 0.0;\nlet optimized_cost_eur = 0.0;\n\nfor (const it of items) {\n  const d = it.json;\n  total_solar_yield_kwh += Number(d.solar_generation_kw || 0);\n  total_grid_import_kwh += Number(d.p_grid_import_kw || 0);\n  total_grid_export_kwh += Number(d.p_grid_export_kw || 0);\n  curtailed_energy_kwh += Number(d.p_curtail_kw || 0);\n  baseline_cost_eur += Number(d.hourly_baseline_cost_eur || 0);\n  optimized_cost_eur += Number(d.hourly_optimized_cost_eur || 0);\n}\n\nconst net_daily_arbitrage_savings_eur = baseline_cost_eur - optimized_cost_eur;\nconst firstTimestamp = items[0] && items[0].json && items[0].json.timestamp ? items[0].json.timestamp : new Date().toISOString();\nconst deliveryDate = firstTimestamp.includes('T') ? firstTimestamp.split('T')[0] : firstTimestamp.substring(0, 10);\n\nreturn [{\n  json: {\n    delivery_date: deliveryDate,\n    total_solar_yield_kwh: Math.round(total_solar_yield_kwh * 100) / 100,\n    total_grid_import_kwh: Math.round(total_grid_import_kwh * 100) / 100,\n    total_grid_export_kwh: Math.round(total_grid_export_kwh * 100) / 100,\n    curtailed_energy_kwh: Math.round(curtailed_energy_kwh * 100) / 100,\n    baseline_cost_eur: Math.round(baseline_cost_eur * 100) / 100,\n    optimized_cost_eur: Math.round(optimized_cost_eur * 100) / 100,\n    net_daily_arbitrage_savings_eur: Math.round(net_daily_arbitrage_savings_eur * 100) / 100,\n    arbitrage_savings_pct: baseline_cost_eur > 0 ? Math.round(((net_daily_arbitrage_savings_eur / baseline_cost_eur) * 100) * 10) / 10 : 0\n  }\n}];"
+      },
+      "position": [
+        1640,
+        540
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "credentials": {
+        "postgres": {
+          "id": "SySkiCgOOFcLH8Kg",
+          "name": "Postgres account 2"
+        }
+      },
+      "id": "node-persist-telemetry",
+      "name": "PersistDailyTelemetry",
+      "parameters": {
+        "operation": "executeQuery",
+        "options": {},
+        "query": "=CREATE TABLE IF NOT EXISTS microgrid_daily_telemetry (\n  delivery_date DATE PRIMARY KEY,\n  total_solar_yield_kwh NUMERIC(10,2),\n  total_grid_import_kwh NUMERIC(10,2),\n  total_grid_export_kwh NUMERIC(10,2),\n  curtailed_energy_kwh NUMERIC(10,2),\n  baseline_cost_eur NUMERIC(10,2),\n  optimized_cost_eur NUMERIC(10,2),\n  net_daily_arbitrage_savings_eur NUMERIC(10,2),\n  recorded_at TIMESTAMPTZ DEFAULT NOW()\n);\n\nINSERT INTO microgrid_daily_telemetry (\n  delivery_date,\n  total_solar_yield_kwh,\n  total_grid_import_kwh,\n  total_grid_export_kwh,\n  curtailed_energy_kwh,\n  baseline_cost_eur,\n  optimized_cost_eur,\n  net_daily_arbitrage_savings_eur,\n  recorded_at\n) VALUES (\n  '{{ $json.delivery_date }}',\n  {{ $json.total_solar_yield_kwh }},\n  {{ $json.total_grid_import_kwh }},\n  {{ $json.total_grid_export_kwh }},\n  {{ $json.curtailed_energy_kwh }},\n  {{ $json.baseline_cost_eur }},\n  {{ $json.optimized_cost_eur }},\n  {{ $json.net_daily_arbitrage_savings_eur }},\n  NOW()\n)\nON CONFLICT (delivery_date) DO UPDATE SET\n  total_solar_yield_kwh = EXCLUDED.total_solar_yield_kwh,\n  total_grid_import_kwh = EXCLUDED.total_grid_import_kwh,\n  total_grid_export_kwh = EXCLUDED.total_grid_export_kwh,\n  curtailed_energy_kwh = EXCLUDED.curtailed_energy_kwh,\n  baseline_cost_eur = EXCLUDED.baseline_cost_eur,\n  optimized_cost_eur = EXCLUDED.optimized_cost_eur,\n  net_daily_arbitrage_savings_eur = EXCLUDED.net_daily_arbitrage_savings_eur,\n  recorded_at = NOW();"
+      },
+      "position": [
+        1960,
+        540
+      ],
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5
+    }
+  ],
+  "connections": {
+    "AggregateDailyMetrics": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "PersistDailyTelemetry",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "ArbitrageOptimizer": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "RouteDirectives",
+            "type": "main"
+          },
+          {
+            "index": 0,
+            "node": "AggregateDailyMetrics",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "CampusLoadProfile": {
+      "main": [
+        [
+          {
+            "index": 1,
+            "node": "MergeDatasets",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "DispatchAlertWebhook": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "AlertDelivered",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "FetchSolarForecast": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "ParseSolarForecast",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "FetchSpotPrices": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "ParseSpotPrices",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "FilterPeakQ4Discharge": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "DispatchAlertWebhook",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "StandardDischarge",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "MergeDatasets": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "ArbitrageOptimizer",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "MergePricesSolar": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "MergeDatasets",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "ParseSolarForecast": {
+      "main": [
+        [
+          {
+            "index": 1,
+            "node": "MergePricesSolar",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "ParseSpotPrices": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "MergePricesSolar",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "RouteDirectives": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "FilterPeakQ4Discharge",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "HandleCharge",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "HandleCurtail",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "HandleIdle",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "ScheduleTrigger": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "FetchSpotPrices",
+            "type": "main"
+          },
+          {
+            "index": 0,
+            "node": "FetchSolarForecast",
+            "type": "main"
+          },
+          {
+            "index": 0,
+            "node": "CampusLoadProfile",
+            "type": "main"
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "binaryMode": "separate"
+  },
+  "tags": []
+}
